@@ -1,0 +1,129 @@
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: java
+spec:
+  env:
+    - name: OTEL_TRACES_EXPORTER
+      value: otlp
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: http://localhost:4317/
+    - name: OTEL_EXPORTER_OTLP_TIMEOUT
+      value: "200"
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: "service.namespace=MD-Hybrid-App"
+  exporter:
+    endpoint: http://localhost:4317/
+  propagators:
+    - jaeger
+    - b3
+    - baggage
+    - tracecontext
+
+---
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: sidecar
+spec:
+  mode: sidecar
+  image: otel/opentelemetry-collector-contrib:0.91.0
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+          http:
+
+    processors:
+      batch:
+      resource:
+        attributes:
+        - key: appdynamics.controller.account
+          action: upsert
+          value: "ceer"
+        - key: appdynamics.controller.host
+          action: upsert     
+          value: "ceer.saas.appdynamics.com"
+        - key: appdynamics.controller.port
+          action: upsert
+          value: 443
+
+    exporters:
+      logging:
+        verbosity: detailed
+        sampling_initial: 20
+        sampling_thereafter: 1
+      otlphttp:
+        tls:
+          insecure: true
+        endpoint: "https://fra-sls-agent-api.saas.appdynamics.com"
+        headers: {"x-api-key": "-placeholder-api-key-"}
+      otlphttp/cco:
+        auth:
+          authenticator: oauth2client/cco
+        traces_endpoint: https://lab1.observe.appdynamics.com/data/v1/trace
+    extensions:
+      oauth2client/cco:
+        client_id: -placeholder-client-id-
+        client_secret: -placeholder-client-secret-
+        token_url: https://lab1.observe.appdynamics.com/auth/-placeholder-token-id-/default/oauth2/token 
+    service:
+      extensions: [oauth2client/cco]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch, resource]
+          exporters: [logging, otlphttp, otlphttp/cco]
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: customers
+  template:
+    metadata:
+      annotations:
+        sidecar.opentelemetry.io/inject: "true"
+        instrumentation.opentelemetry.io/inject-java: "true"
+      labels:
+        app: customers
+        appdApp: MD-Hybrid-App
+    spec:
+      containers:
+      - name: customers
+        image: chrlic/echoapp:latest 
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8181
+        resources:
+          limits:
+            cpu: "1"
+            memory: 500Mi
+          requests:
+            cpu: 250m
+            memory: 100Mi
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: customers
+  labels:
+    run: customers
+spec:
+  ports:
+  - port: 8282
+    targetPort: 8181
+    protocol: TCP
+  selector:
+    app: customers
+  type: LoadBalancer

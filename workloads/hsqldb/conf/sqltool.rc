@@ -1,0 +1,4 @@
+urlid initdb0
+url jdbc:hsqldb:file:/var/opt/hsqldb/data/db0/db0;shutdown=true
+username SA
+password

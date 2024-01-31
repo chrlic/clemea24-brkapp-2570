@@ -1,0 +1,92 @@
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: artillery
+  labels:
+    app: artillery
+spec:
+  completions: 1
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: artillery
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: artillery
+        image: artilleryio/artillery:latest
+        command:
+        - /home/node/artillery/bin/run
+        - run
+        - /opt/artillery/loadtest.yaml
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: loadtest-config
+          readOnly: true
+          mountPath: /opt/artillery/loadtest.yaml
+          subPath: loadtest.yaml
+      volumes:
+        - name: loadtest-config
+          configMap:
+            name: loadtest-config
+            items:
+              - key: loadtest.yaml
+                path: loadtest.yaml
+            defaultMode: 420
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadtest-config
+data:
+  loadtest.yaml: |
+    config:
+      target: http://customers.demo.svc.cluster.local:8282
+      phases:
+        - duration: 60
+          arrivalRate: 1
+          rampTo: 5
+          name: Warm up phase
+        - duration: 60
+          arrivalRate: 5
+          rampTo: 10
+          name: Ramp up load
+        - duration: 30
+          arrivalRate: 10
+          rampTo: 30
+          name: Spike phase
+      # Load & configure a couple of useful plugins
+      # https://docs.art/reference/extensions
+      plugins:
+        ensure: {}
+        apdex: {}
+        metrics-by-endpoint: {}
+      apdex:
+        threshold: 100
+      ensure:
+        thresholds:
+          - http.response_time.p99: 10000
+          - http.response_time.p95: 9000
+    scenarios:
+      - flow:
+          - loop:
+            - get:
+                url: "/db"
+            count: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: artillery
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8090
+    protocol: TCP
+    targetPort: 8090
+  selector:
+    app: artillery

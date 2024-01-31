@@ -1,0 +1,313 @@
+
+serviceaccount: webhook-instrumentor
+deploymentName: webhook-server
+webhookName: webhook-appd
+# namespacesEnabled is optional list of namespaces, where webhook would be applied. 
+# If missing, all namespaces will be enabled, except kubernetes system namespaces
+# namespacesEnabled:
+# - ns1
+# - ns2
+#
+# namespacesDisabled is optional list of namespaces, where webhook would not be applied. 
+# If missing, all namespaces will be enabled, except kubernetes system namespaces 
+# (and namespace where the webook itself is running)
+# namespacesDisabled:
+# - ns3
+#
+# enabledForPodsWithLabels is optional safety belt to try to instrument only pods
+# having set labels to a specific values
+# enabledForPodsWithLabels:
+# - appdInstr
+#
+# number of replicas for webhook server
+replicas: 1
+certValidityDays: 1024
+# failure policy can be Fail or Ignore. 
+# Ignore is safer - should the webhook fail or be unresponsive for timeoutSeconds, pod gets created unchanged
+timeoutSeconds: 2
+failurePolicy: Ignore
+debug: false
+
+# optional - certs information. If missing, certs will be generated dynamically, but that does 
+# not work with helm upgrade (except on OpenShift with service CA usage)
+# certs:
+#   tlsCert:
+#   tlsKey:
+#   caCert:
+
+# optional - useServiceCAonOCP: true - if set, on OpenShift, Service CA certificates will be used
+useServiceCAonOCP: true
+
+# service type and port for webhook server
+service:
+  type: ClusterIP
+  port: 443
+
+# image for pods running the webhook functionality
+image:
+  image: docker.io/chrlic/appd-webhook-instrumentor:v1.0.4-exp
+  pullPolicy: Always
+
+# enables exceptions from instrumentation rules via namespaced CRD
+useCrdConfig: false
+
+# enables tracing of the webhook by OpenTelemetry
+# otelTracing:
+#   endpoint: otel-collector.default.svc.cluster.local:4317
+#   serviceName: mwh
+#   samplesPerMillion: "1000000"
+#   logPayload: true
+
+# optional AppDynamics controller access information - required if 
+# AppDynamics native/hybrid agents are used
+appdController:
+  # host: se-lab.saas.appdynamics.com
+  # port: "443"
+  # isSecure: true
+  # accountName: se-lab
+  # accessKey: "hj6a4d7h2cuq"
+  host: ceer.saas.appdynamics.com
+  port: "443"
+  isSecure: true
+  accountName: ceer
+  accessKey: "-placeholder-access-key-"
+  # useProxy: true
+  # proxyHost: proxy.corm.com
+  # proxyPort: "8080"
+  otelEndpoint: https://fra-sls-agent-api.saas.appdynamics.com
+  otelHeaderKey: "-placeholder-api-key-"
+
+ciscoCloudObservability:
+  global:
+    clusterName: mdivis-k8s-colima
+  appdynamicsOtelCollector:
+    clientId: -placeholder-client-id-
+    clientSecret: -placeholder-client-secret-
+    endpoint: https://lab1.observe.appdynamics.com/data
+    tokenUrl: https://lab1.observe.appdynamics.com/auth/-placeholder-token-id-/default/oauth2/token
+
+# optional OpenTelemetry parameters
+# covers OTel Collector settings for AppDynamics cSaaS, and AppDynamics Cloud
+openTelemetryCollectors:
+  # collector name MUST be DNS friendly - only lowercase, numbers and "-"
+  deployment-hybrid-agent-default:
+    # mode - one of "sidecar", "deployment", "external"
+    mode: deployment
+    # replicas is only considered for OTel collector running as a deployment, otherwise ignored
+    replicas: 1
+    image: 
+      image: docker.io/otel/opentelemetry-collector-contrib:0.91.0
+      imagePullPolicy: Always
+      initImage: docker.io/alpine:latest
+    config: >
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+            http:
+      processors:
+        batch:
+        resource:
+          attributes:
+          - key: appdynamics.controller.account
+            action: upsert
+            value: "{{ .Values.appdController.accountName }}"
+          - key: appdynamics.controller.host
+            action: upsert     
+            value: "{{ .Values.appdController.host }}"
+          - key: appdynamics.controller.port
+            action: upsert
+            value: {{ .Values.appdController.port }}
+        k8sattributes:
+            auth_type: "serviceAccount"
+            passthrough: false
+            filter:
+              node_from_env_var: KUBE_NODE_NAME
+            extract:
+              metadata:
+                - k8s.pod.name
+                - k8s.pod.uid
+                - k8s.deployment.name
+                - k8s.namespace.name
+                - k8s.node.name
+                - k8s.pod.start_time
+                - container.image.name
+                - container.id
+            pod_association:
+            - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+      exporters:
+        logging:
+          loglevel: debug
+        # This part says that the opentelemetry collector will send data to OTIS pipeline for AppDynamicas CSaaS.
+        otlphttp:
+          tls:
+            insecure: true
+          endpoint: "{{ .Values.appdController.otelEndpoint }}"
+          headers: {"x-api-key": "{{ .Values.appdController.otelHeaderKey }}"}
+        otlphttp/cco:
+          auth:
+            authenticator: oauth2client/cco
+          traces_endpoint: {{.Values.ciscoCloudObservability.appdynamicsOtelCollector.endpoint}}/v1/trace
+      extensions:
+        oauth2client/cco:
+          client_id: "{{.Values.ciscoCloudObservability.appdynamicsOtelCollector.clientId}}"
+          client_secret: "{{.Values.ciscoCloudObservability.appdynamicsOtelCollector.clientSecret}}"
+          token_url: "{{.Values.ciscoCloudObservability.appdynamicsOtelCollector.tokenUrl}}"          
+      service:
+        extensions: [oauth2client/cco]
+        pipelines:
+          traces:
+            receivers: [otlp]
+            processors: [batch, k8sattributes, resource]
+            exporters: [logging, otlphttp, otlphttp/cco]
+        telemetry:
+          logs:
+            level: "debug"
+  sidecar-hybrid-agent-default:
+    # mode - one of "sidecar", "deployment", "external"
+    mode: sidecar
+    # replicas is only considered for OTel collector running as a deployment, otherwise ignored
+    replicas: 1
+    image: 
+      image: docker.io/otel/opentelemetry-collector-contrib:0.91.0
+      imagePullPolicy: Always
+      initImage: docker.io/alpine:latest
+    config: >
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+            http:
+      processors:
+        batch:
+        resource:
+          attributes:
+          - key: appdynamics.controller.account
+            action: upsert
+            value: "{{ .Values.appdController.accountName }}"
+          - key: appdynamics.controller.host
+            action: upsert     
+            value: "{{ .Values.appdController.host }}"
+          - key: appdynamics.controller.port
+            action: upsert
+            value: {{ .Values.appdController.port }}
+      exporters:
+        logging:
+          loglevel: debug
+        # This part says that the opentelemetry collector will send data to OTIS pipeline for AppDynamicas CSaaS.
+        otlphttp:
+          tls:
+            insecure: true
+          endpoint: "{{ .Values.appdController.otelEndpoint }}"
+          headers: {"x-api-key": "{{ .Values.appdController.otelHeaderKey }}"}
+        jaeger:
+          endpoint: "jaeger.default.svc.cluster.local:14250"
+          tls:
+            insecure: true
+      service:
+        pipelines:
+          traces:
+            receivers: [otlp]
+            processors: [batch, resource]
+            exporters: [logging, otlphttp]
+        telemetry:
+          logs:
+            level: "debug"
+  external-hybrid-agent-default:
+    mode: external
+    collectorEndpoint: otel-collector.default.svc.cluster.local
+
+instrumentationTemplates:
+  - name: Java_Appd_Otel
+    injectionRules:
+      # technology = java | dotnetcore | nodejs
+      # provider = appd | otel - appd is default if missing
+      technology: java/appd
+      image: appdynamics/java-agent:latest
+      javaEnvVar: JAVA_TOOL_OPTIONS
+      applicationNameSource: label
+      applicationNameLabel: appdApp
+      tierNameSource: auto
+      openTelemetryCollector: deployment-hybrid-agent-default
+  - name: Java_Otel
+    injectionRules:
+      # technology = java | dotnetcore | nodejs
+      # provider = appd | otel - appd is default if missing
+      technology: java/otel
+      image: chrlic/opentelemetry-java-agent:latest
+      imagePullPolicy: Always
+      javaEnvVar: JAVA_TOOL_OPTIONS
+      applicationNameSource: label
+      applicationNameLabel: appdApp
+      tierNameSource: auto
+  - name: Dotnet_Otel
+    injectionRules:
+      technology: dotnetcore/otel
+      image: chrlic/opentelemetry-dotnet-agent:latest
+      imagePullPolicy: Always
+      applicationNameSource: label
+      applicationNameLabel: appdApp
+      tierNameSource: auto
+  - name: Nodejs_Otel
+    injectionRules:
+      technology: nodejs/otel
+      image: chrlic/opentelemetry-nodejs-agent:latest
+      imagePullPolicy: Always
+      applicationNameSource: label
+      applicationNameLabel: appdApp
+      tierNameSource: auto
+  - name: Apache_Otel
+    injectionRules:
+      technology: apache/otel
+      image: chrlic/autoinstrumentation-apache-httpd:1.0.2
+      imagePullPolicy: Always
+      applicationNameSource: label
+      applicationNameLabel: appdApp
+      tierNameSource: auto
+      openTelemetryCollector: deployment-hybrid-agent-default
+  - name: Nginx_Otel
+    injectionRules:
+      technology: nginx/otel
+      image: chrlic/autoinstrumentation-apache-httpd:1.0.2
+      imagePullPolicy: Always
+      applicationNameSource: label
+      applicationNameLabel: appdApp
+      tierNameSource: auto
+      openTelemetryCollector: deployment-hybrid-agent-default
+
+instrumentationRules:
+  - name: java-otel-test
+    matchRules:
+      namespaceRegex: .*
+      labels:
+      - otel: appd
+      - language: java
+      annotations:
+      - annot1: .*
+      podNameRegex: .*
+    injectionRules:
+      template: Java_Appd_Otel
+  - name: apache-otel-test
+    matchRules:
+      namespaceRegex: .*
+      labels:
+      - otel: appd
+      - language: apache
+      podNameRegex: .*
+    injectionRules:
+      template: Apache_Otel
+  - name: nginx-otel-test
+    matchRules:
+      namespaceRegex: .*
+      labels:
+      - otel: appd
+      - language: nginx
+      podNameRegex: .*
+    injectionRules:
+      template: Nginx_Otel
+
+

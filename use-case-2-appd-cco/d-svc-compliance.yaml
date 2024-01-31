@@ -1,0 +1,63 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance
+  labels:
+    app: compliance
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: compliance
+  template:
+    metadata:
+      labels:
+        app: compliance
+    spec:
+      containers:
+      - name: compliance
+        image: chrlic/go-compliance:v1.0
+        ports:
+        - containerPort: 8090
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: otel-coll-deployment-hybrid-agent-default.mwh.svc.cluster.local:4317
+        - name: OTEL_SERVICE_NAME
+          value: compliance
+        - name: OTEL_SERVICE_NAMESPACE
+          value: MD-Hybrid-App
+        - name: VENDORS_HOST_PORT_PROTO
+          value: http://vendors.demo.svc.cluster.local:8383
+        - name: K8S_POD_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: K8S_POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: K8S_NAMESPACE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: >-
+            k8s.pod.ip=$(K8S_POD_IP),k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME),k8s.container.name=compliance
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8090
+    protocol: TCP
+    targetPort: 8090
+  selector:
+    app: compliance

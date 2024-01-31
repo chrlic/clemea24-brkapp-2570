@@ -1,0 +1,44 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-http-server
+  labels:
+    app: go-http-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-http-server
+  template:
+    metadata:
+      labels:
+        app: go-http-server
+    spec:
+      containers:
+      - name: go-http-server
+        image: chrlic/go-compliance:v1.0
+        ports:
+        - containerPort: 8090
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: otel-collector.default.svc.cluster.local:4317
+        - name: OTEL_SERVICE_NAME
+          value: go-http-server2
+        - name: OTEL_SERVICE_NAMESPACE
+          value: MD-Go-Example
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-http-server
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8090
+    protocol: TCP
+    targetPort: 8090
+  selector:
+    app: go-http-server 

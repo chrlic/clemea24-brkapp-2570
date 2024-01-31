@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vendors
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vendors
+  template:
+    metadata:
+      annotations:
+        annot1: my-annotation
+      labels:
+        app: vendors
+        appdApp: MD-Hybrid-App
+        otel: appd
+        language: java
+    spec:
+      containers:
+      - name: vendors
+        image: chrlic/echoapp:latest 
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8181
+        resources:
+          limits:
+            cpu: "1"
+            memory: 500Mi
+          requests:
+            cpu: 250m
+            memory: 100Mi
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vendors
+  labels:
+    run: vendors
+spec:
+  ports:
+  - port: 8383
+    targetPort: 8181
+    protocol: TCP
+  selector:
+    app: vendors
+  type: LoadBalancer
+

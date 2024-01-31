@@ -1,0 +1,180 @@
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: java
+spec:
+  env:
+    - name: OTEL_TRACES_EXPORTER
+      value: otlp
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: http://localhost:4317/
+    - name: OTEL_EXPORTER_OTLP_TIMEOUT
+      value: "200"
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: "service.namespace=MD-Hybrid-App"
+  exporter:
+    endpoint: http://localhost:4317/
+  propagators:
+    - jaeger
+    - b3
+    - baggage
+    - tracecontext
+
+---
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: sidecar
+spec:
+  mode: sidecar
+  image: chrlic/otelcol-dev:0.91.1
+  imagePullPolicy: Always
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+          http:
+
+    processors:
+      batch:
+      resource:
+        attributes:
+        - key: appdynamics.controller.account
+          action: upsert
+          value: "ceer"
+        - key: appdynamics.controller.host
+          action: upsert     
+          value: "ceer.saas.appdynamics.com"
+        - key: appdynamics.controller.port
+          action: upsert
+          value: 443
+
+    connectors:
+      spanmetrics:
+        histogram:
+          explicit:
+            buckets: [2ms, 4ms, 6ms, 8ms, 10ms, 50ms, 100ms, 200ms, 400ms, 800ms, 1s, 1400ms, 2s, 5s, 10s, 15s]
+        dimensions:
+          - name: db.statement
+          # - name: http.method
+          #   default: GET
+          # - name: http.status_code
+        exemplars:
+          enabled: false
+        exclude_dimensions: ['status.code']
+        dimensions_cache_size: 1000
+        aggregation_temporality: "AGGREGATION_TEMPORALITY_DELTA"    
+        metrics_flush_interval: 60s
+
+    exporters:
+      logging:
+        verbosity: detailed
+        sampling_initial: 20
+        sampling_thereafter: 1
+      otlphttp:
+        tls:
+          insecure: true
+        endpoint: "https://syd-sls-agent-api.saas.appdynamics.com"
+        # endpoint: "https://fra-sls-agent-api.saas.appdynamics.com"
+        headers: {"x-api-key": "-placeholder-api-key-"}
+      appdynamics:
+        metrics:
+        analytics:
+          url: "https://fra-ana-api.saas.appdynamics.com"
+          globalAccountName: "-placeholder-global-account-name-"
+          apiKey: "-placeholder-analytics-api-key-"
+          metricsTable: mdotelmetrics
+          logsTable: mdotellogs
+          initTable: false
+      prometheusremotewrite/grafana:
+        endpoint: https://prometheus-prod-01-eu-west-0.grafana.net/api/prom/push
+        auth:
+          authenticator: basicauth/grafanametrics
+    
+    extensions:
+      basicauth/grafanametrics:
+        client_auth:
+          username: "-grafana-cloud-metrics-user-name-"
+          password: "-grafana-cloud-metrics-password-=="
+
+    service:
+      extensions: [basicauth/grafanametrics]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch, resource]
+          exporters: [logging, otlphttp, spanmetrics]
+          # exporters: [logging, otlphttp]
+        metrics:
+          receivers: [spanmetrics]
+          exporters: [logging, appdynamics, prometheusremotewrite/grafana]
+
+      telemetry:
+        logs:
+          level: "debug"
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: customers
+  template:
+    metadata:
+      annotations:
+        sidecar.opentelemetry.io/inject: "true"
+        instrumentation.opentelemetry.io/inject-java: "true"
+      labels:
+        app: customers
+        appdApp: MD-Hybrid-App
+    spec:
+      containers:
+      - name: customers
+        image: chrlic/echoapp:latest 
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8181
+        resources:
+          limits:
+            cpu: "1"
+            memory: 500Mi
+          requests:
+            cpu: 250m
+            memory: 100Mi
+      - name: hsqldb
+        image: chrlic/hsqldb:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9001
+        resources:
+          limits:
+            cpu: "1"
+            memory: 500Mi
+          requests:
+            cpu: 250m
+            memory: 100Mi
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: customers
+  labels:
+    run: customers
+spec:
+  ports:
+  - port: 8282
+    targetPort: 8181
+    protocol: TCP
+  selector:
+    app: customers
+  type: LoadBalancer

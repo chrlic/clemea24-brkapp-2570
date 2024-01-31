@@ -1,0 +1,46 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance
+  labels:
+    app: compliance
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: compliance
+  template:
+    metadata:
+      labels:
+        app: compliance
+    spec:
+      containers:
+      - name: compliance
+        image: chrlic/go-compliance:v1.0
+        ports:
+        - containerPort: 8090
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: otel-coll-deployment-hybrid-agent-default.mwh.svc.cluster.local:4317
+        - name: OTEL_SERVICE_NAME
+          value: compliance
+        - name: OTEL_SERVICE_NAMESPACE
+          value: MD-Hybrid-App
+        - name: VENDORS_HOST_PORT_PROTO
+          value: http://vendors.demo.svc.cluster.local:8383
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8090
+    protocol: TCP
+    targetPort: 8090
+  selector:
+    app: compliance
